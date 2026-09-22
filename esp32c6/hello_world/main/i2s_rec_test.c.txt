@@ -1,0 +1,52 @@
+/* 阶段二存档：INMP441 I2S 录音验证（不参与编译）
+ * 用法：把本文件内容替换回 hello_world_main.c（并确保 CMakeLists 有 PRIV_REQUIRES esp_driver_i2s）
+ * 接线：SCK=GPIO10, WS=GPIO11, SD=GPIO2, L/R=GND（左声道）
+ * 验收：安静时 avg 几十~几百，说话时 avg 明显变大（几千~几万）——注：32bit 原始值口径 */
+#include <stdio.h>
+#include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2s_std.h"
+
+#define I2S_BCLK   10
+#define I2S_WS     11
+#define I2S_DIN    2
+#define CHUNK      512
+
+void app_main(void) {
+    i2s_chan_handle_t rx_chan;
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &rx_chan));
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+                                                        I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_BCLK,
+            .ws   = I2S_WS,
+            .dout = I2S_GPIO_UNUSED,
+            .din  = I2S_DIN,
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
+        },
+    };
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;  /* L/R 接地 = 左声道 */
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
+
+    int32_t buf[CHUNK];
+    size_t n = 0;
+    while (1) {
+        if (i2s_channel_read(rx_chan, buf, sizeof(buf), &n, portMAX_DELAY) == ESP_OK && n) {
+            int cnt = n / sizeof(int32_t);
+            long long acc = 0;
+            int32_t peak = 0;
+            for (int i = 0; i < cnt; i++) {
+                int32_t v = buf[i] < 0 ? -buf[i] : buf[i];
+                acc += v;
+                if (v > peak) peak = v;
+            }
+            printf("avg=%lld peak=%ld\n", acc / cnt, (long)peak);
+        }
+    }
+}
